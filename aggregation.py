@@ -18,6 +18,7 @@ single entry point called from the notebook.
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 
 def aggregate(
@@ -45,15 +46,18 @@ def aggregate(
     # STUDENT: Replace or extend the aggregation below.
     # ------------------------------------------------------------------
 
-    # Default: last real token of the final transformer layer.
-    layer = hidden_states[-1]          # (seq_len, hidden_dim)
+    real_positions = attention_mask.nonzero(as_tuple=True)[0]
+    
+    num_layers = hidden_states.shape[0]
 
-    # Find the index of the last real (non-padding) token.
-    real_positions = attention_mask.nonzero(as_tuple=False)  # (n_real, 1)
-    last_pos = int(real_positions[-1].item())                 # scalar index
+    features = []
+    for i in range(num_layers - 1, num_layers // 2 - 1, -3):
+        layer_cur = hidden_states[i, real_positions[-30:], :]    
+        mean_cur_layer = layer_cur.mean(dim=0)
+        features.append(mean_cur_layer)
 
-    feature = layer[last_pos]          # (hidden_dim,)
-
+    feature = torch.cat(features, dim=0)
+    
     return feature
     # ------------------------------------------------------------------
 
@@ -85,8 +89,29 @@ def extract_geometric_features(
     # STUDENT: Replace or extend the geometric feature extraction below.
     # ------------------------------------------------------------------
 
-    # Placeholder: returns an empty tensor (no geometric features).
-    return torch.zeros(0)
+    real_positions = attention_mask.nonzero(as_tuple=True)[0]
+    if real_positions.numel() == 0:
+        return torch.zeros(6, dtype=hidden_states.dtype, device=hidden_states.device)
+
+    last_pos = real_positions[-1]
+    vec_l1 = hidden_states[-3, last_pos, :]
+    vec_l2 = hidden_states[-2, last_pos, :]
+    vec_l3 = hidden_states[-1, last_pos, :]
+
+    norm_l1 = torch.norm(vec_l1, p=2).unsqueeze(0)
+    norm_l2 = torch.norm(vec_l2, p=2).unsqueeze(0)
+    norm_l3 = torch.norm(vec_l3, p=2).unsqueeze(0)
+
+    cos_1_2 = F.cosine_similarity(vec_l1, vec_l2, dim=0).unsqueeze(0)
+    cos_2_3 = F.cosine_similarity(vec_l2, vec_l3, dim=0).unsqueeze(0)
+    seq_length = torch.tensor(
+        [float(real_positions.numel())],
+        dtype=hidden_states.dtype,
+        device=hidden_states.device,
+    )
+
+    geo_features = torch.cat([norm_l1, norm_l2, norm_l3, cos_1_2, cos_2_3, seq_length], dim=0)
+    return geo_features
 
 
 def aggregation_and_feature_extraction(
